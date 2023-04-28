@@ -35,6 +35,7 @@ typedef struct DisasContext {
     /* Space for 3 operands plus 1 extra for address computation. */
     TCGv temp[4];
     uint8_t ntemp;
+    CPUState *cs;
 } DisasContext;
 
 void generate_exception(DisasContext *ctx, int excp);

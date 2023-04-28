@@ -284,7 +284,7 @@ static void host_open(CPUState *cs, gdb_syscall_complete_cb complete,
     } else {
         int guestfd = alloc_guestfd();
         associate_guestfd(guestfd, ret);
-        complete(cs, guestfd, 0);
+        complete(cs, guestfd, 0);//common_semi_cb
     }
     unlock_user(p, fname, 0);
 }
@@ -323,7 +323,7 @@ static void host_read(CPUState *cs, gdb_syscall_complete_cb complete,
         complete(cs, -1, errno);
     } else {
         unlock_user(ptr, buf, ret);
-        complete(cs, ret, 0);
+        complete(cs, ret, 0);//common_semi_rw_cb
     }
 }
 

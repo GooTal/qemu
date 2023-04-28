@@ -18,6 +18,7 @@
 #include "fpu/softfloat-helpers.h"
 #include "cpu-csr.h"
 #include "sysemu/reset.h"
+#include "semihosting/common-semi.h"
 
 const char * const regnames[32] = {
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
@@ -52,6 +53,7 @@ static const char * const excp_names[] = {
     [EXCCODE_FPE] = "Floating Point Exception",
     [EXCCODE_DBP] = "Debug breakpoint",
     [EXCCODE_BCE] = "Bound Check Exception",
+    [EXCCODE_SEMIHOST] = "Semihosting Exception",
 };
 
 const char *loongarch_exception_name(int32_t exception)
@@ -96,6 +98,7 @@ static vaddr loongarch_cpu_get_pc(CPUState *cs)
 
 void loongarch_cpu_set_irq(void *opaque, int irq, int level)
 {
+    // printf("%s:%d %s\n", __FILE__, __LINE__, __func__);
     LoongArchCPU *cpu = opaque;
     CPULoongArchState *env = &cpu->env;
     CPUState *cs = CPU(cpu);
@@ -157,6 +160,12 @@ static void loongarch_cpu_do_interrupt(CPUState *cs)
                      "%s enter: pc " TARGET_FMT_lx " ERA " TARGET_FMT_lx
                      " TLBRERA " TARGET_FMT_lx " %s exception\n", __func__,
                      env->pc, env->CSR_ERA, env->CSR_TLBRERA, name);
+    }
+
+    if(cs->exception_index == EXCCODE_SEMIHOST){
+        do_common_semihosting(cs);
+        env->pc += 4;
+        return;
     }
 
     switch (cs->exception_index) {

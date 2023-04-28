@@ -389,7 +389,7 @@ static struct _loaderparams {
 
 static uint64_t cpu_loongarch_virt_to_phys(void *opaque, uint64_t addr)
 {
-    return addr & 0x1fffffffll;
+    return addr & 0xffffffffffffll;
 }
 
 static int64_t load_kernel_info(void)
