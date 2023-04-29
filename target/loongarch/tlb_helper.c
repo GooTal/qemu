@@ -168,23 +168,23 @@ static int loongarch_map_address(CPULoongArchState *env, hwaddr *physical,
     if(cs->exception_index != EXCCODE_SEMIHOST){
         return TLBRET_NOMATCH;
     }else{
-        
+
     /** 
      * For semihosting memory access, Qemu would only acquire virtual address, we want 
      * to do the page walk when there is a legal mapping, even if the mapping is not 
      * yet in TLB. return TLBRET_MATCH if there is a valid map, else none zero.
      * 
-     * NOTE: This is just a temporary solution for Loongson 3A5000, which requires OS handling 
-     * tlb refill. 
+     * NOTE: This is just a temporary solution for Loongson 3A5000, which still requires 
+     * OS to handdle tlb refill if not in semihosting exception. 
      * 
      */
         
-        target_ulong index, phys;
+        target_ulong phys, index;
         int shift;
         uint64_t dir_base, dir_width;
         uint64_t base;
         bool huge;
-        int d, v, i;
+        target_ulong d, v, i;
 
         /* 0:64bit, 1:128bit, 2:192bit, 3:256bit */
         shift = FIELD_EX64(env->CSR_PWCL, CSR_PWCL, PTEWIDTH);
@@ -236,6 +236,14 @@ static int loongarch_map_address(CPULoongArchState *env, hwaddr *physical,
             }
         }
 
+        target_ulong ptindex, phys0, phys1, ptoffset0, ptoffset1, odd;
+        // target_ulong ptindex, phys0, ptoffset0;
+        target_ulong ps, tmp0, tmp1;
+        // target_ulong ps, tmp0;
+        target_ulong d0, d1, v0, v1; 
+        // target_ulong d0, v0;
+        uint64_t ptbase = FIELD_EX64(env->CSR_PWCL, CSR_PWCL, PTBASE);
+        uint64_t ptwidth = FIELD_EX64(env->CSR_PWCL, CSR_PWCL, PTWIDTH);
         /* pte */
         if (huge) {
             /* Huge Page. base is paddr */
@@ -246,34 +254,84 @@ static int loongarch_map_address(CPULoongArchState *env, hwaddr *physical,
                     (base & (~(1 << LOONGARCH_HGLOBAL_SHIFT)));
             /* get TARGET_PAGE_SIZE aligned physical address */
             base += (address & TARGET_PHYS_MASK) & ((1 << dir_base) - 1) & TARGET_PAGE_MASK;
+            
+            ps = ptbase + ptwidth - 1;//16MB
+
+            tmp0 = base & (~MAKE_64BIT_MASK(ps, 1));
+            tmp1 = tmp0 + (1 << ps);
         } else {
-            dir_base = FIELD_EX64(env->CSR_PWCL, CSR_PWCL, PTBASE);
-            dir_width = FIELD_EX64(env->CSR_PWCL, CSR_PWCL, PTWIDTH);
-            index = (address >> dir_base) & ((1 << dir_width) - 1);
-            phys = base | index << shift;
-            base = ldq_phys(cs->as, phys);
+            ptindex = (address >> ptbase) & ((1 << ptwidth) - 1);
+            if(ptindex & 0x1){
+                odd = 1;
+            }else{
+                odd = 0;
+            }
+            ptindex = ptindex & ~0x1U;
+
+            ptoffset1 = (ptindex + 1) << shift;
+            phys1 = base | ptoffset1;
+            tmp1 = ldq_phys(cs->as, phys1) & TARGET_PHYS_MASK;
+            tmp1 += (address & TARGET_PHYS_MASK) & ((1 << ptbase) - 1) & TARGET_PAGE_MASK;
+
+            ptoffset0 = ptindex << shift;
+            phys0 = base | ptoffset0;
+            tmp0 = ldq_phys(cs->as, phys0) & TARGET_PHYS_MASK;
+            tmp0 += (address & TARGET_PHYS_MASK) & ((1 << ptbase) - 1) & TARGET_PAGE_MASK;
+
+            if (tmp0 == 0 && tmp1 == 0)
+            return TLBRET_NOMATCH;
+
             /* get TARGET_PAGE_SIZE aligned physical address */
-            base += (address & TARGET_PHYS_MASK) & ((1 << dir_base) - 1) & TARGET_PAGE_MASK;
-            if (base == 0) return TLBRET_NOMATCH;
+
+            ps = ptbase;
         }
 
+        v0 = tmp0 & 1;
+        v1 = tmp1 & 1;
+        d0 = (tmp0 >> 1) & 1;
+        d1 = (tmp1 >> 1) & 1;
         //fprintf(stderr, "debug map: %lx %lx\n", address, base);
-
-        v = base & 1;
-        d = (base >> 1) & 1;
-        /* TODO: check plv and other bits? */
-
-        if (!v)
-            return TLBRET_NOMATCH;
 
         /* physmem cpu_memory_rw_debug expect a TARGET_PAGE_SIZE aligned result
         * mask off the attribute bits here
         */
-        *physical = base & TARGET_PAGE_MASK;
+        if(odd){
+            *physical = tmp1 & TARGET_PAGE_MASK;
+            d = d1;
+            v = v1;
+        }else{
+            *physical = tmp0 & TARGET_PAGE_MASK;
+            d = d0;
+            v = v0;
+        }
+
+        /* TODO: check plv and other bits? */
+        if (!v)
+            return TLBRET_NOMATCH;
+
         if (!d)
             *prot = PAGE_READ;
         else
             *prot = PAGE_READ | PAGE_WRITE;
+
+        
+        /**
+         * Handle tlb refill 
+         */
+
+        env->CSR_TLBRBADV = address;
+        env->CSR_TLBRERA = FIELD_DP64(env->CSR_TLBRERA, CSR_TLBRERA, ISTLBR, 1);
+        env->CSR_TLBRERA = FIELD_DP64(env->CSR_TLBRERA, CSR_TLBRERA, PC, env->pc >> 2);
+
+        env->CSR_TLBREHI = FIELD_DP64(env->CSR_TLBREHI, CSR_TLBREHI, PS, ps);
+        env->CSR_TLBREHI = FIELD_DP64(env->CSR_TLBREHI, CSR_TLBREHI, VPPN, extract64(address, 13, 35));
+
+        env->CSR_TLBRELO0 = tmp0;
+        env->CSR_TLBRELO1 = tmp1;
+
+        helper_tlbfill(env);
+
+        env->CSR_TLBRERA = FIELD_DP64(env->CSR_TLBRERA, CSR_TLBRERA, ISTLBR, 0);
 
         return TLBRET_MATCH;
     }
